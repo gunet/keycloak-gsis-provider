@@ -1,0 +1,26 @@
+name: Removal / End-of-life
+description: Removal of deprecated or obsolete functionality
+labels:
+  - type/eol
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What is being removed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: justification
+    attributes:
+      label: Justification
+    validations:
+      required: true
+
+  - type: textarea
+    id: breaking
+    attributes:
+      label: Breaking impact
+      description: Does this affect existing users?
+    validations:
+      required: true

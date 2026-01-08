@@ -1,0 +1,26 @@
+name: Security improvement
+description: Security-related improvement (non-sensitive)
+labels:
+  - type/cve
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ Do NOT report vulnerabilities here.
+        Use GitHub Security Advisories for sensitive disclosures.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the security concern or improvement.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Security impact
+      description: What risk does this mitigate?
+    validations:
+      required: true

@@ -1,0 +1,110 @@
+name: GSIS Provider Build & Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+env:
+  TAG_NAME: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Java ${{ matrix.java }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: ['17', '21']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: temurin
+          cache: maven
+
+      - name: Extract Keycloak Version
+        id: keycloak
+        run: |
+          VERSION=$(mvn help:evaluate -Dexpression=keycloak.version -q -DforceStdout)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "major=$(echo $VERSION | cut -d. -f1)" >> $GITHUB_OUTPUT
+
+      - name: Build
+        run: mvn -B package -Djava.version=${{ matrix.java }}
+
+      - name: Rename jar
+        run: |
+          mv target/keycloak-gsis-provider-*.jar \
+             target/keycloak-gsis-provider-java-${{ matrix.java }}-keycloak-${{ steps.keycloak.outputs.major }}-${{ env.TAG_NAME }}.jar
+
+      - name: Generate Release Notes
+        if: github.ref_type == 'tag'
+        id: notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const version = context.ref_name;
+            const releaseLabel = `release/${version}`;
+
+            const issues = await github.rest.search.issuesAndPullRequests({
+              q: [
+                `repo:${owner}/${repo}`,
+                `is:issue`,
+                `label:${releaseLabel}`
+              ].join(' '),
+              per_page: 100
+            });
+
+            const sections = {
+              'type/deprecated': [],
+              'type/eol': [],
+              'type/feature': [],
+              'type/bug': [],
+              'type/cve': []
+            };
+
+            for (const issue of issues.data.items) {
+              const typeLabel = issue.labels.find(l => l.name.startsWith('type/'));
+              if (!typeLabel || !sections[typeLabel.name]) continue;
+
+              sections[typeLabel.name].push(
+                `- ${issue.title} (#${issue.number})`
+              );
+            }
+
+            const render = (title, items) => {
+              if (!items.length) return '';
+              return `### ${title}\n\n${items.join('\n')}\n\n`;
+            };
+
+            let body = `## All resolved issues\n\n`;
+
+            body += render('Deprecated Features', sections['type/deprecated']);
+            body += render('Removed Features', sections['type/eol']);
+            body += render('New Features', sections['type/feature']);
+            body += render('Bug Fixes', sections['type/bug']);
+            body += render('Security Fixes', sections['type/cve']);
+
+            if (body.trim() === `## All resolved issues\n\n`) {
+              body += '\n_No changes since last release._\n';
+            }
+
+            core.setOutput('body', body);
+
+      - name: Create Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v1
+        with:
+          body: ${{ steps.notes.outputs.body }}
+          files: target/keycloak-gsis-provider-java-${{ matrix.java }}-keycloak-${{ steps.keycloak.outputs.major }}-${{ env.TAG_NAME }}.jar

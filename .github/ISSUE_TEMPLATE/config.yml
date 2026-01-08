@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private)
+    url: https://github.com/gunet/keycloak-gsis-provider/security/policy
+    about: Report security vulnerabilities privately via GitHub Security Advisories

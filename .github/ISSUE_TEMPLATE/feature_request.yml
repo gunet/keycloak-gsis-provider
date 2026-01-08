@@ -1,0 +1,32 @@
+name: Feature request
+description: Request a new feature or enhancement
+labels:
+  - type/feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are included under **New Features**
+        in the release notes once assigned to a release.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this feature needed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior or design.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      required: false
