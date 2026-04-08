@@ -54,6 +54,7 @@ class GsisIdentityProviderTest {
     @BeforeEach
     void setUp() {
         setupUserProfileProvider();
+        when(config.isEnabled()).thenReturn(true);
         provider = new GsisIdentityProvider(session, config);
     }
 
