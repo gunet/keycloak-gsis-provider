@@ -17,6 +17,7 @@ import org.keycloak.forms.login.LoginFormsProvider;
 import org.keycloak.models.AuthenticatorConfigModel;
 import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.KeycloakTransactionManager;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserProvider;
@@ -51,6 +52,9 @@ class IdpDetectExistingLdapUserAuthenticatorTest {
 
     @Mock
     private KeycloakSession session;
+
+    @Mock
+    private KeycloakTransactionManager transactionManager;
 
     @Mock
     private RealmModel realm;
@@ -102,6 +106,8 @@ class IdpDetectExistingLdapUserAuthenticatorTest {
         when(authConfig.getConfig()).thenReturn(new HashMap<>());
         when(brokerContext.getIdpConfig()).thenReturn(new IdentityProviderModel());
         when(loginFormsProvider.createErrorPage(any())).thenReturn(mockResponse);
+        when(session.getTransactionManager()).thenReturn(transactionManager);
+        doNothing().when(transactionManager).setRollbackOnly();
 
         profileMock = mock(Profile.class);
         profileStatic = mockStatic(Profile.class);
