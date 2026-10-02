@@ -2,21 +2,86 @@ name: GSIS Provider Build & Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "*"
+  pull_request:
   workflow_dispatch:
 
 env:
   TAG_NAME: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+  SUPPORTED_KEYCLOAK_VERSIONS: "26.4.0,26.5.7,26.6.4,26.7.5,26.8.0"
 
 permissions:
   contents: write
 
 jobs:
+  compatibility-matrix:
+    name: Generate compatibility matrix
+    runs-on: ubuntu-latest
+
+    outputs:
+      keycloak: ${{ steps.matrix.outputs.keycloak }}
+
+    steps:
+      - name: Generate matrix
+        id: matrix
+        run: |
+          MATRIX=$(echo "$SUPPORTED_KEYCLOAK_VERSIONS" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "keycloak=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  compatibility:
+    name: Keycloak compatibility ${{ matrix.keycloak }}
+    needs: compatibility-matrix
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        keycloak: ${{ fromJSON(needs.compatibility-matrix.outputs.keycloak) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        run: |
+          mvn -B clean test \
+            -Dkeycloak.version=${{ matrix.keycloak }}
+
+      - name: Save compatibility result
+        if: always()
+        run: |
+          if [ "${{ steps.tests.outcome }}" = "success" ]; then
+            echo "supported" > compatibility-result.txt
+          else
+            echo "not-supported" > compatibility-result.txt
+          fi
+
+      - name: Upload compatibility result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-${{ matrix.keycloak }}
+          path: compatibility-result.txt
+
   build:
+    needs: compatibility
     name: Java ${{ matrix.java }}
     runs-on: ubuntu-latest
+
     strategy:
+      fail-fast: false
       matrix:
         java: ['17', '21']
 
@@ -25,7 +90,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ matrix.java }}
           distribution: temurin
@@ -35,19 +100,48 @@ jobs:
         id: keycloak
         run: |
           VERSION=$(mvn help:evaluate -Dexpression=keycloak.version -q -DforceStdout)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "major=$(echo $VERSION | cut -d. -f1)" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: mvn -B package -Djava.version=${{ matrix.java }}
+        run: |
+          mvn -B package -Djava.version=${{ matrix.java }}
 
       - name: Rename jar
         run: |
           mv target/keycloak-gsis-provider-*.jar \
-             target/keycloak-gsis-provider-java-${{ matrix.java }}-keycloak-${{ steps.keycloak.outputs.major }}-${{ env.TAG_NAME }}.jar
+             target/keycloak-gsis-provider-java-${{ matrix.java }}-keycloak-${{ steps.keycloak.outputs.version }}-${{ env.TAG_NAME }}.jar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keycloak-gsis-provider-java-${{ matrix.java }}
+          path: target/keycloak-gsis-provider-java-${{ matrix.java }}-keycloak-${{ steps.keycloak.outputs.version }}-${{ env.TAG_NAME }}.jar
+
+
+  release:
+    name: Create Release
+    if: github.ref_type == 'tag'
+    needs: 
+      - compatibility
+      - build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download compatibility results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compatibility-*
+          path: compatibility
+          merge-multiple: false
+
+      - name: Download JARs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: keycloak-gsis-provider-java-*
+          path: artifacts
+          merge-multiple: false
 
       - name: Generate Release Notes
-        if: github.ref_type == 'tag'
         id: notes
         uses: actions/github-script@v7
         with:
@@ -60,7 +154,6 @@ jobs:
             const issues = await github.rest.search.issuesAndPullRequests({
               q: [
                 `repo:${owner}/${repo}`,
-                `is:issue`,
                 `label:${releaseLabel}`
               ].join(' '),
               per_page: 100
@@ -88,23 +181,98 @@ jobs:
               return `### ${title}\n\n${items.join('\n')}\n\n`;
             };
 
-            let body = `## All resolved issues\n\n`;
+            const supportedKeycloakVersions =
+              process.env.SUPPORTED_KEYCLOAK_VERSIONS
+                .split(',')
+                .map(version => version.trim())
+                .filter(Boolean);
 
-            body += render('Deprecated Features', sections['type/deprecated']);
-            body += render('Removed Features', sections['type/eol']);
-            body += render('New Features', sections['type/feature']);
-            body += render('Bug Fixes', sections['type/bug']);
-            body += render('Security Fixes', sections['type/cve']);
+            const latestKeycloakVersion = supportedKeycloakVersions[supportedKeycloakVersions.length - 1];
 
-            if (body.trim() === `## All resolved issues\n\n`) {
-              body += '\n_No changes since last release._\n';
+            let compatibilityTable =
+              `## Keycloak Compatibility\n\n` +
+              `The provider was tested against the following Keycloak versions:\n\n` +
+              `| Keycloak Version | Status |\n` +
+              `|---|---|\n`;
+
+            for (const keycloakVersion of supportedKeycloakVersions) {
+              const resultFile =
+                `compatibility/compatibility-${keycloakVersion}/compatibility-result.txt`;
+
+              let status = '❌ Not supported';
+
+              try {
+                const fs = require('fs');
+
+                const result = fs
+                  .readFileSync(resultFile, 'utf8')
+                  .trim();
+
+                if (result === 'supported') {
+                  status = '✅ Supported';
+                }
+              } catch (error) {
+                status = '❌ Not supported';
+              }
+
+              let displayVersion = keycloakVersion;
+
+              if (keycloakVersion !== latestKeycloakVersion) {
+                const parts = keycloakVersion.split('.');
+
+                if (parts.length >= 2) {
+                  displayVersion = `${parts[0]}.${parts[1]}.x`;
+                }
+              }
+
+              compatibilityTable +=
+                `| ${displayVersion} | ${status} |\n`;
+            }
+
+            compatibilityTable += '\n';
+
+            let body = compatibilityTable;
+
+            body += `## All resolved issues\n\n`;
+
+            body += render(
+              'Deprecated Features',
+              sections['type/deprecated']
+            );
+
+            body += render(
+              'Removed Features',
+              sections['type/eol']
+            );
+
+            body += render(
+              'New Features',
+              sections['type/feature']
+            );
+
+            body += render(
+              'Bug Fixes',
+              sections['type/bug']
+            );
+
+            body += render(
+              'Security Fixes',
+              sections['type/cve']
+            );
+
+            const hasIssues = Object.values(sections)
+              .some(items => items.length > 0);
+
+            if (!hasIssues) {
+              body += '_No changes since last release._\n';
             }
 
             core.setOutput('body', body);
 
       - name: Create Release
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v1
         with:
           body: ${{ steps.notes.outputs.body }}
-          files: target/keycloak-gsis-provider-java-${{ matrix.java }}-keycloak-${{ steps.keycloak.outputs.major }}-${{ env.TAG_NAME }}.jar
+          files: |
+            artifacts/keycloak-gsis-provider-java-17/*.jar
+            artifacts/keycloak-gsis-provider-java-21/*.jar
